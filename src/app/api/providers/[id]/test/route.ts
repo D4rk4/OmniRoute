@@ -34,6 +34,10 @@ import { isConnectionUnavailableToAuxiliaryActivity } from "@/lib/exclusiveLease
 import { buildApiKeyConnectionTestResult } from "./apiKeyTestResult";
 import { classifyOAuthProbeInconclusive, OAUTH_TEST_CONFIG } from "./oauthTestConfig";
 import { isGeoBlockedError } from "@omniroute/open-sse/services/errorClassifier.ts";
+import {
+  getReasoningControlEndpointFingerprint,
+  normalizeDetectedReasoningControl,
+} from "@omniroute/open-sse/utils/reasoningControl.ts";
 import * as retirement from "@/lib/providers/chatgptWebRetirementResponse";
 import {
   classifyFailure,
@@ -1147,6 +1151,31 @@ export async function testSingleConnection(
   if (result.valid && (connection.apiKey || connection.accessToken)) {
     const recovered = recoverKeyHealth(connectionId, "primary", latest.providerSpecificData);
     if (recovered) updateData.providerSpecificData = recovered;
+  }
+
+  if (
+    result.valid &&
+    Object.hasOwn(result, "detectedReasoningControl") &&
+    typeof result.reasoningControlEndpointFingerprint === "string"
+  ) {
+    const currentPsd = {
+      ...(((updateData.providerSpecificData ?? latest.providerSpecificData) as Record<
+        string,
+        unknown
+      > | null) || {}),
+    };
+    const explicitControl = currentPsd.reasoningControl;
+    const currentFingerprint = getReasoningControlEndpointFingerprint(currentPsd);
+    if (
+      explicitControl !== "chat-template" &&
+      explicitControl !== "openai" &&
+      currentFingerprint === result.reasoningControlEndpointFingerprint
+    ) {
+      const detected = normalizeDetectedReasoningControl(result.detectedReasoningControl);
+      if (detected) currentPsd.detectedReasoningControl = detected;
+      else delete currentPsd.detectedReasoningControl;
+      updateData.providerSpecificData = currentPsd;
+    }
   }
 
   if (result.refreshed && result.newTokens) {

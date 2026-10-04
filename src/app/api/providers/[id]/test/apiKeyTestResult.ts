@@ -3,6 +3,8 @@ export interface ApiKeyValidationResult {
   warning?: string | null;
   statusCode?: number | null;
   deployments?: unknown;
+  detectedReasoningControl?: unknown;
+  reasoningControlEndpointFingerprint?: unknown;
 }
 
 export interface ApiKeyTestDiagnosis {
@@ -26,5 +28,11 @@ export function buildApiKeyConnectionTestResult(
     statusCode: result.valid && result.statusCode !== 402 ? null : (result.statusCode ?? null),
     diagnosis,
     ...(Array.isArray(result.deployments) ? { deployments: result.deployments } : {}),
+    ...(Object.hasOwn(result, "detectedReasoningControl")
+      ? { detectedReasoningControl: result.detectedReasoningControl ?? null }
+      : {}),
+    ...(Object.hasOwn(result, "reasoningControlEndpointFingerprint")
+      ? { reasoningControlEndpointFingerprint: result.reasoningControlEndpointFingerprint ?? null }
+      : {}),
   };
 }

@@ -858,6 +858,31 @@ ordinary inference API keys. Credential families, scopes, and curl examples:
 | `/api/provider-models`                  | GET/POST/PATCH/DELETE | Custom models (add, update, hide/show, delete)                                                                                                            |
 | `/api/provider-models/validate-and-add` | POST                  | Management-authenticated, opt-in strict-connection validation and atomic custom-model registration; see [Model validation](../guides/MODEL-VALIDATION.md) |
 
+Custom Chat Completions nodes adapt explicit reasoning opt-outs to the upstream backend. A
+successful connection test automatically selects chat-template controls when every model returned
+by `/models` has the same recognized `owned_by` value: `vllm`, `sglang`, or `llamacpp`. Detection
+reuses the existing catalog request, generates no completion tokens, and is invalidated when the
+connection endpoint changes.
+
+To pin the behavior for a backend that does not expose that metadata, use the existing partial
+provider update API:
+
+```json
+{
+  "providerSpecificData": {
+    "reasoningControl": "chat-template"
+  }
+}
+```
+
+Send that body with `PUT /api/providers/<connection-id>`. On that connection, an explicit
+reasoning effort of `none` is sent as `chat_template_kwargs.thinking=false` and
+`chat_template_kwargs.enable_thinking=false`. Explicit native template values remain authoritative
+unless a server-side reasoning rule forces an effort. The setting applies only when a custom
+OpenAI-compatible connection dispatches a Chat Completions body; Responses requests and ordinary
+providers keep their native request shape. Set `reasoningControl` to `openai` to force ordinary OpenAI
+`reasoning_effort` passthrough, or omit it/set it to `null` to use automatic detection.
+
 ### OAuth Flows
 
 | Endpoint                         | Method  | Description             |
