@@ -54,7 +54,7 @@ async function invokeUpstreamClassifier({
       JSON.stringify({
         id: "chatcmpl-classifier",
         object: "chat.completion",
-        model: "sonnet-coder",
+        model: "sonnet-classifier-test",
         choices: [
           {
             index: 0,
@@ -68,13 +68,17 @@ async function invokeUpstreamClassifier({
     );
   }) as typeof fetch;
 
-  const body = { ...structuredClone(CLASSIFIER_BODY), model: "sonnet-coder", max_tokens: 2112 };
+  const body = {
+    ...structuredClone(CLASSIFIER_BODY),
+    model: "sonnet-classifier-test",
+    max_tokens: 2112,
+  };
   try {
     const result = await handleChatCore({
       body,
       modelInfo: {
         provider: "openai-compatible-classifier-test",
-        model: "sonnet-coder",
+        model: "sonnet-classifier-test",
         extendedContext: false,
         resolvedThinkingEffort,
       },
@@ -224,7 +228,7 @@ test("classifier requests without reasoning default to disabled native thinking 
   ] as const) {
     const body: Record<string, unknown> = {
       ...structuredClone(CLASSIFIER_BODY),
-      model: "sonnet-coder",
+      model: "sonnet-classifier-test",
       max_tokens: maxTokens,
     };
     if (stopSequences === undefined) delete body.stop_sequences;
