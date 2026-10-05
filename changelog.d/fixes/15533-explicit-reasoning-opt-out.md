@@ -1,0 +1,1 @@
+- **fix(reasoning):** explicit Claude disabled-thinking requests now survive preprocessing and Claude-to-OpenAI translation, while automatically discovered compatible backend profiles apply native chat-template off switches to exact advertised models ([#15533](https://github.com/diegosouzapw/OmniRoute/pull/15533)) — thanks @D4rk4
