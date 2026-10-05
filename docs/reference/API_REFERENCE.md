@@ -885,6 +885,13 @@ OpenAI-compatible connection dispatches a Chat Completions body; Responses reque
 providers keep their native request shape. Set `reasoningControl` to `openai` to force ordinary OpenAI
 `reasoning_effort` passthrough, or omit it/set it to `null` to use automatic detection.
 
+Claude Code auto-mode classifier requests default native thinking to disabled when they contain
+no explicit reasoning controls. Detection uses the classifier's system marker in Claude-format
+requests, not model names or completion limits. Explicit body controls, supported effort/thinking
+headers, routing rules, and resolved model effort keep their existing priority. Both classifier
+stages retain their prompts, completion limits, stop sequences, and real upstream permission
+verdicts; the second stage can still produce its requested visible reasoning as ordinary text.
+
 ### OAuth Flows
 
 | Endpoint                         | Method  | Description             |
