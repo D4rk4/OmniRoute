@@ -859,10 +859,12 @@ ordinary inference API keys. Credential families, scopes, and curl examples:
 | `/api/provider-models/validate-and-add` | POST                  | Management-authenticated, opt-in strict-connection validation and atomic custom-model registration; see [Model validation](../guides/MODEL-VALIDATION.md) |
 
 Custom Chat Completions nodes adapt explicit reasoning opt-outs to the upstream backend. A
-successful connection test automatically selects chat-template controls when every model returned
-by `/models` has the same recognized `owned_by` value: `vllm`, `sglang`, or `llamacpp`. Detection
-reuses the existing catalog request, generates no completion tokens, and is invalidated when the
-connection endpoint changes.
+successful connection test automatically selects chat-template controls for each exact model ID
+whose `/models` entry proves a recognized `owned_by` value: `vllm`, `sglang`, or `llamacpp`.
+Transparent OpenAI-compatible wrappers may preserve the original model entry inside a nested
+`openai` object; detection follows up to three such envelopes. Models with missing, unknown, or
+conflicting ownership keep ordinary OpenAI behavior. Detection reuses the existing catalog request,
+generates no completion tokens, and is invalidated when the connection endpoint changes.
 
 To pin the behavior for a backend that does not expose that metadata, use the existing partial
 provider update API:

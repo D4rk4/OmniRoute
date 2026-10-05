@@ -163,32 +163,79 @@ test("openai-compatible validation detects chat-template reasoning backends from
     assert.deepEqual(
       {
         mode: result.detectedReasoningControl?.mode,
-        backend: result.detectedReasoningControl?.backend,
+        modelBackends: result.detectedReasoningControl?.modelBackends,
         source: result.detectedReasoningControl?.source,
         detectorVersion: result.detectedReasoningControl?.detectorVersion,
       },
       {
         mode: "chat-template",
-        backend,
-        source: "models.data.owned_by",
-        detectorVersion: 1,
+        modelBackends: { "model-a": backend, "model-b": backend },
+        source: "models.data.effective_owned_by",
+        detectorVersion: 2,
       }
     );
     assert.match(result.detectedReasoningControl?.observedAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
   }
 });
 
+test("openai-compatible validation records exact model evidence through transparent wrappers", async () => {
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        object: "list",
+        data: [
+          {
+            id: "Case/Sensitive-Model",
+            owned_by: "openai",
+            openai: {
+              owned_by: "openai",
+              openai: { owned_by: "VLLM" },
+            },
+          },
+          { id: "direct-model", owned_by: "sglang" },
+          { id: "__proto__", owned_by: "llamacpp" },
+          { id: "conflicting-model", owned_by: "vllm" },
+          { id: "conflicting-model", owned_by: "sglang" },
+          { id: "partially-known-model", owned_by: "vllm" },
+          { id: "partially-known-model", owned_by: "vendor-gateway" },
+          { id: "manual-alias", owned_by: "openai", openai: { id: "manual-alias" } },
+          { id: "unknown-model", owned_by: "vendor-gateway" },
+        ],
+      }),
+      { status: 200 }
+    );
+
+  const result = await validateProviderApiKey({
+    provider: "openai-compatible-transparent-wrapper",
+    apiKey: "sk-test",
+    providerSpecificData: { baseUrl: "https://api.example.com/v1" },
+  });
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(
+    result.detectedReasoningControl?.modelBackends,
+    Object.fromEntries([
+      ["Case/Sensitive-Model", "vllm"],
+      ["direct-model", "sglang"],
+      ["__proto__", "llamacpp"],
+    ])
+  );
+  assert.equal(
+    Object.hasOwn(result.detectedReasoningControl?.modelBackends ?? {}, "conflicting-model"),
+    false
+  );
+  assert.equal(
+    Object.hasOwn(result.detectedReasoningControl?.modelBackends ?? {}, "partially-known-model"),
+    false
+  );
+  assert.equal(result.detectedReasoningControl?.backend, undefined);
+  assert.equal(result.detectedReasoningControl?.detectorVersion, 2);
+});
+
 for (const responseBody of [
   { object: "list", data: [] },
   { object: "list", data: [{ id: "model-a" }] },
   { object: "list", data: [{ id: "model-a", owned_by: "unknown-engine" }] },
-  {
-    object: "list",
-    data: [
-      { id: "model-a", owned_by: "vllm" },
-      { id: "model-b", owned_by: "sglang" },
-    ],
-  },
 ] as const) {
   test(`openai-compatible validation abstains for unproven /models ownership: ${JSON.stringify(responseBody)}`, async () => {
     globalThis.fetch = async () => new Response(JSON.stringify(responseBody), { status: 200 });

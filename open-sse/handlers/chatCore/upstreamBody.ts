@@ -320,10 +320,7 @@ type PrepareUpstreamBodyOptions = {
   log?: LoggerLike;
 };
 
-function normalizeAttemptBody(
-  opts: PrepareUpstreamBodyOptions,
-  reasoningControl: "chat-template" | "openai"
-): Body {
+function normalizeAttemptBody(opts: PrepareUpstreamBodyOptions): Body {
   const { translatedBody, modelToCall, provider, targetFormat, log } = opts;
   // Capture intent before constraints remove unsupported fields. Removed explicit
   // choices must not turn into permission to inject automatic defaults.
@@ -336,7 +333,6 @@ function normalizeAttemptBody(
   const hasExplicitTemplateReasoning =
     provider?.startsWith("openai-compatible-") &&
     targetFormat === FORMATS.OPENAI &&
-    reasoningControl === "chat-template" &&
     Array.isArray(translatedBody.messages) &&
     translatedBody.input === undefined &&
     (typeof templateKwargs?.thinking === "boolean" ||
@@ -407,8 +403,7 @@ export async function prepareUpstreamBody(opts: PrepareUpstreamBodyOptions): Pro
     log,
   } = opts;
 
-  const reasoningControl = resolveReasoningControl(credentials?.providerSpecificData);
-  let bodyToSend = normalizeAttemptBody(opts, reasoningControl);
+  let bodyToSend = normalizeAttemptBody(opts);
   const payloadRuleModel =
     typeof bodyToSend.model === "string" && bodyToSend.model.length > 0
       ? bodyToSend.model
@@ -428,17 +423,25 @@ export async function prepareUpstreamBody(opts: PrepareUpstreamBodyOptions): Pro
     );
   }
 
+  const finalWireModel =
+    typeof bodyToSend.model === "string" && bodyToSend.model.length > 0
+      ? bodyToSend.model
+      : modelToCall;
+  const finalReasoningControl = resolveReasoningControl(
+    credentials?.providerSpecificData,
+    finalWireModel
+  );
   const reasoningControlResult = applyConfiguredReasoningControl(
     bodyToSend,
     provider,
     targetFormat,
     credentials,
-    reasoningControl
+    finalReasoningControl
   );
   bodyToSend = reasoningControlResult.body;
   bodyToSend = sanitizeRequestForResolvedTarget(bodyToSend, {
     provider,
-    model: payloadRuleModel,
+    model: finalWireModel,
     log,
   });
   if (reasoningControlResult.requiresNativeOff) {

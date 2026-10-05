@@ -412,9 +412,9 @@ test("detected reasoning control applies only while its endpoint fingerprint is 
   };
   providerSpecificData.detectedReasoningControl = {
     mode: "chat-template",
-    backend: "vllm",
-    source: "models.data.owned_by",
-    detectorVersion: 1,
+    modelBackends: { "detected-model": "vllm" },
+    source: "models.data.effective_owned_by",
+    detectorVersion: 2,
     observedAt: "2026-10-05T00:00:00.000Z",
     endpointFingerprint: getReasoningControlEndpointFingerprint(providerSpecificData),
   };
@@ -455,6 +455,130 @@ test("detected reasoning control applies only while its endpoint fingerprint is 
   });
   assert.equal(explicitlyOpenAI.reasoning_effort, "none");
   assert.equal(explicitlyOpenAI.chat_template_kwargs, undefined);
+});
+
+test("detected reasoning control uses exact final wire model evidence", async () => {
+  const providerSpecificData: Record<string, unknown> = {
+    baseUrl: "https://engine.example.test/v1",
+    apiType: "chat",
+  };
+  providerSpecificData.detectedReasoningControl = {
+    mode: "chat-template",
+    modelBackends: Object.fromEntries([
+      ["Case/Known-Model", "vllm"],
+      ["__proto__", "sglang"],
+    ]),
+    source: "models.data.effective_owned_by",
+    detectorVersion: 2,
+    observedAt: "2026-10-05T00:00:00.000Z",
+    endpointFingerprint: getReasoningControlEndpointFingerprint(providerSpecificData),
+  };
+  const credentials = { providerSpecificData };
+  const prepare = (modelToCall: string) =>
+    prepareUpstreamBody({
+      translatedBody: { messages: [], reasoning_effort: "none" },
+      modelToCall,
+      provider: templateControlProvider,
+      targetFormat: FORMATS.OPENAI,
+      credentials,
+    });
+
+  const known = await prepare("Case/Known-Model");
+  assert.equal(known.reasoning_effort, undefined);
+  assert.deepEqual(known.chat_template_kwargs, {
+    thinking: false,
+    enable_thinking: false,
+  });
+
+  const differentCase = await prepare("case/known-model");
+  assert.equal(differentCase.reasoning_effort, "none");
+  assert.equal(differentCase.chat_template_kwargs, undefined);
+
+  const prototypeNamed = await prepare("__proto__");
+  assert.equal(prototypeNamed.reasoning_effort, undefined);
+  const detected = providerSpecificData.detectedReasoningControl as Record<string, unknown>;
+  assert.equal(Object.hasOwn(detected.modelBackends as object, "__proto__"), true);
+});
+
+test("payload-rule model rewrites select reasoning control from the final wire model", async () => {
+  const providerSpecificData: Record<string, unknown> = {
+    baseUrl: "https://engine.example.test/v1",
+    apiType: "chat",
+  };
+  providerSpecificData.detectedReasoningControl = {
+    mode: "chat-template",
+    modelBackends: {
+      "gpt-5-known-final-model": "vllm",
+      "gpt-5-known-initial-model": "sglang",
+    },
+    source: "models.data.effective_owned_by",
+    detectorVersion: 2,
+    observedAt: "2026-10-05T00:00:00.000Z",
+    endpointFingerprint: getReasoningControlEndpointFingerprint(providerSpecificData),
+  };
+  const options = {
+    translatedBody: { messages: [], reasoning_effort: "none", verbosity: "high" },
+    provider: templateControlProvider,
+    targetFormat: FORMATS.OPENAI,
+    credentials: { providerSpecificData },
+  };
+
+  setPayloadRulesConfig({
+    override: [{ models: [{ name: "*" }], params: { model: "gpt-5-known-final-model" } }],
+  });
+  try {
+    const routedToKnown = await prepareUpstreamBody({
+      ...options,
+      modelToCall: "unknown-initial-model",
+    });
+    assert.equal(routedToKnown.model, "gpt-5-known-final-model");
+    assert.equal(routedToKnown.reasoning_effort, undefined);
+    assert.equal(routedToKnown.verbosity, "high");
+    assert.deepEqual(routedToKnown.chat_template_kwargs, {
+      thinking: false,
+      enable_thinking: false,
+    });
+
+    const nativeOff = await prepareUpstreamBody({
+      ...options,
+      translatedBody: {
+        messages: [],
+        chat_template_kwargs: { thinking: false, enable_thinking: false },
+      },
+      modelToCall: "unknown-initial-model",
+      originModel: "unknown-initial-model",
+      resolvedThinkingEffort: "high",
+      defaultThinkingEffort: "high",
+    });
+    const repeatedNativeOff = await prepareUpstreamBody({
+      ...options,
+      translatedBody: nativeOff,
+      modelToCall: "unknown-initial-model",
+      originModel: "unknown-initial-model",
+      resolvedThinkingEffort: "high",
+      defaultThinkingEffort: "high",
+    });
+    assert.equal(nativeOff.reasoning_effort, undefined);
+    assert.deepEqual(repeatedNativeOff, nativeOff);
+  } finally {
+    resetPayloadRulesConfigForTests();
+  }
+
+  setPayloadRulesConfig({
+    override: [{ models: [{ name: "*" }], params: { model: "unknown-final-model" } }],
+  });
+  try {
+    const routedToUnknown = await prepareUpstreamBody({
+      ...options,
+      modelToCall: "gpt-5-known-initial-model",
+    });
+    assert.equal(routedToUnknown.model, "unknown-final-model");
+    assert.equal(routedToUnknown.reasoning_effort, "none");
+    assert.equal(routedToUnknown.chat_template_kwargs, undefined);
+    assert.equal(routedToUnknown.verbosity, undefined);
+  } finally {
+    resetPayloadRulesConfigForTests();
+  }
 });
 
 test("native chat-template off remains explicit across automatic defaults and repeated preparation", async () => {

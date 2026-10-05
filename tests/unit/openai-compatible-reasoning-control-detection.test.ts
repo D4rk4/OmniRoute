@@ -79,7 +79,7 @@ test("successful connection validation persists detected reasoning control onto 
   assert.deepEqual(
     {
       mode: (psd.detectedReasoningControl as Record<string, unknown>)?.mode,
-      backend: (psd.detectedReasoningControl as Record<string, unknown>)?.backend,
+      modelBackends: (psd.detectedReasoningControl as Record<string, unknown>)?.modelBackends,
       source: (psd.detectedReasoningControl as Record<string, unknown>)?.source,
       detectorVersion: (psd.detectedReasoningControl as Record<string, unknown>)?.detectorVersion,
       fingerprintType: typeof (psd.detectedReasoningControl as Record<string, unknown>)
@@ -87,9 +87,9 @@ test("successful connection validation persists detected reasoning control onto 
     },
     {
       mode: "chat-template",
-      backend: "vllm",
-      source: "models.data.owned_by",
-      detectorVersion: 1,
+      modelBackends: { "served-model": "vllm" },
+      source: "models.data.effective_owned_by",
+      detectorVersion: 2,
       fingerprintType: "string",
     }
   );
@@ -122,9 +122,9 @@ test("successful unknown ownership clears stale auto-detection", async () => {
   const connection = await seedConnection({
     detectedReasoningControl: {
       mode: "chat-template",
-      backend: "vllm",
-      source: "models.data.owned_by",
-      detectorVersion: 1,
+      modelBackends: { "served-model": "vllm" },
+      source: "models.data.effective_owned_by",
+      detectorVersion: 2,
       observedAt: "2026-01-01T00:00:00.000Z",
       endpointFingerprint: "stale",
     },
@@ -147,13 +147,54 @@ test("successful unknown ownership clears stale auto-detection", async () => {
   );
 });
 
+test("successful validation replaces the whole detected model map", async () => {
+  await resetStorage();
+  const endpoint = {
+    baseUrl: "https://engine.example.test/v1",
+    apiType: "chat",
+  };
+  const connection = await seedConnection({
+    detectedReasoningControl: {
+      mode: "chat-template",
+      modelBackends: { "removed-model": "vllm", "current-model": "vllm" },
+      source: "models.data.effective_owned_by",
+      detectorVersion: 2,
+      observedAt: "2026-01-01T00:00:00.000Z",
+      endpointFingerprint: getReasoningControlEndpointFingerprint(endpoint),
+    },
+  });
+  const connectionId = String((connection as { id: unknown }).id);
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        object: "list",
+        data: [
+          { id: "current-model", owned_by: "vllm" },
+          { id: "new-model", owned_by: "sglang" },
+        ],
+      }),
+      { status: 200 }
+    );
+
+  await testSingleConnection(connectionId);
+  const after = await providersDb.getProviderConnectionById(connectionId);
+  const detected = (after.providerSpecificData as Record<string, unknown>)
+    .detectedReasoningControl as Record<string, unknown>;
+  const modelBackends = detected.modelBackends as Record<string, unknown>;
+  assert.deepEqual(modelBackends, {
+    "current-model": "vllm",
+    "new-model": "sglang",
+  });
+  assert.equal(Object.hasOwn(modelBackends, "removed-model"), false);
+});
+
 test("failed validation preserves prior auto-detection evidence", async () => {
   await resetStorage();
   const detectedReasoningControl = {
     mode: "chat-template",
-    backend: "vllm",
-    source: "models.data.owned_by",
-    detectorVersion: 1,
+    modelBackends: { "served-model": "vllm" },
+    source: "models.data.effective_owned_by",
+    detectorVersion: 2,
     observedAt: "2026-01-01T00:00:00.000Z",
     endpointFingerprint: "prior",
   };
@@ -207,9 +248,9 @@ test("an explicit pin clears stale detection so clearing the pin cannot reactiva
   const connection = await seedConnection({
     detectedReasoningControl: {
       mode: "chat-template",
-      backend: "vllm",
-      source: "models.data.owned_by",
-      detectorVersion: 1,
+      modelBackends: { "served-model": "vllm" },
+      source: "models.data.effective_owned_by",
+      detectorVersion: 2,
       observedAt: "2026-01-01T00:00:00.000Z",
       endpointFingerprint: getReasoningControlEndpointFingerprint(endpoint),
     },

@@ -3,6 +3,7 @@ import {
   REASONING_CONTROL_DETECTED_BACKENDS,
   REASONING_CONTROL_DETECTION_SOURCE,
   REASONING_CONTROL_DETECTOR_VERSION,
+  REASONING_CONTROL_MAX_MODELS,
   normalizeDetectedReasoningControl,
   type DetectedReasoningControl,
 } from "@/shared/reasoning/reasoningControl.ts";
@@ -15,6 +16,7 @@ export {
 } from "@/shared/reasoning/reasoningControl.ts";
 
 type JsonRecord = Record<string, unknown>;
+const MAX_TRANSPARENT_OWNER_DEPTH = 3;
 
 function toRecord(value: unknown): JsonRecord | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : null;
@@ -53,28 +55,34 @@ export function detectReasoningControl(
 ): DetectedReasoningControl | null {
   const payload = toRecord(modelsPayload);
   const rows = payload?.data;
-  if (!Array.isArray(rows) || rows.length === 0 || rows.length > 10_000) return null;
-
-  const owners: string[] = [];
-  for (const row of rows) {
-    const record = toRecord(row);
-    const owner = typeof record?.owned_by === "string" ? record.owned_by.trim().toLowerCase() : "";
-    if (!owner) return null;
-    owners.push(owner);
-  }
-
-  const backend = owners[0];
-  if (
-    !REASONING_CONTROL_DETECTED_BACKENDS.has(backend) ||
-    owners.some((owner) => owner !== backend)
-  )
+  if (!Array.isArray(rows) || rows.length === 0 || rows.length > REASONING_CONTROL_MAX_MODELS)
     return null;
+
   const endpointFingerprint = getReasoningControlEndpointFingerprint(providerSpecificData);
   if (!endpointFingerprint) return null;
 
+  const evidence = new Map<string, string | null>();
+  for (const row of rows) {
+    const record = toRecord(row);
+    const modelId = typeof record?.id === "string" && record.id.length > 0 ? record.id : null;
+    if (!modelId) continue;
+
+    const backend = readDetectedBackend(record);
+    if (!evidence.has(modelId)) {
+      evidence.set(modelId, backend);
+    } else if (evidence.get(modelId) !== backend) {
+      evidence.set(modelId, null);
+    }
+  }
+
+  const modelBackends = Object.fromEntries(
+    [...evidence].filter((entry): entry is [string, string] => entry[1] !== null)
+  );
+  if (Object.keys(modelBackends).length === 0) return null;
+
   return {
     mode: "chat-template",
-    backend,
+    modelBackends,
     source: REASONING_CONTROL_DETECTION_SOURCE,
     detectorVersion: REASONING_CONTROL_DETECTOR_VERSION,
     observedAt,
@@ -82,14 +90,28 @@ export function detectReasoningControl(
   };
 }
 
-export function resolveReasoningControl(providerSpecificData: unknown): "chat-template" | "openai" {
+function readDetectedBackend(row: JsonRecord): string | null {
+  let current: JsonRecord | null = row;
+  for (let depth = 0; current && depth <= MAX_TRANSPARENT_OWNER_DEPTH; depth += 1) {
+    const owner = typeof current.owned_by === "string" ? current.owned_by.trim().toLowerCase() : "";
+    if (REASONING_CONTROL_DETECTED_BACKENDS.has(owner)) return owner;
+    if (owner !== "openai" || depth === MAX_TRANSPARENT_OWNER_DEPTH) return null;
+    current = toRecord(current.openai);
+  }
+  return null;
+}
+
+export function resolveReasoningControl(
+  providerSpecificData: unknown,
+  modelId?: unknown
+): "chat-template" | "openai" {
   const data = toRecord(providerSpecificData);
   if (data?.reasoningControl === "chat-template") return "chat-template";
   if (data?.reasoningControl === "openai") return "openai";
+  if (typeof modelId !== "string" || modelId.length === 0) return "openai";
 
   const detected = normalizeDetectedReasoningControl(data?.detectedReasoningControl);
   const currentFingerprint = getReasoningControlEndpointFingerprint(data);
-  return detected && detected.endpointFingerprint === currentFingerprint
-    ? "chat-template"
-    : "openai";
+  if (!detected || detected.endpointFingerprint !== currentFingerprint) return "openai";
+  return Object.hasOwn(detected.modelBackends, modelId) ? "chat-template" : "openai";
 }
