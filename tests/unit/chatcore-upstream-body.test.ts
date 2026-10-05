@@ -25,6 +25,8 @@ const { setParamFilterConfig, deleteParamFilterConfig } =
 const { MODEL_SPECS } = await import("../../src/shared/constants/modelSpecs.ts");
 const { setPayloadRulesConfig, resetPayloadRulesConfigForTests } =
   await import("../../open-sse/services/payloadRules.ts");
+const { applyOutputStyles } =
+  await import("../../open-sse/services/compression/outputStyles/apply.ts");
 
 before(async () => {
   await coreDb.ensureDbInitialized();
@@ -834,6 +836,58 @@ test("Claude disabled thinking reaches chat-template dispatch as native off swit
     provider: templateControlProvider,
     targetFormat: FORMATS.OPENAI,
     credentials: templateControlCredentials,
+  });
+  assert.equal(outbound.reasoning_effort, undefined);
+  assert.deepEqual(outbound.chat_template_kwargs, {
+    thinking: false,
+    enable_thinking: false,
+  });
+});
+
+test("output-style injection preserves Claude disabled thinking through dispatch", async () => {
+  const targetModel = "wrapped-disabled-model";
+  const styled = applyOutputStyles(
+    {
+      messages: [{ role: "user", content: "Reply with the requested marker." }],
+      thinking: { type: "disabled" },
+      max_tokens: 64,
+    },
+    [{ id: "terse-prose", level: "full" }],
+    "en",
+    { autoClarity: false }
+  );
+  assert.equal(styled.applied, true);
+  assert.equal(styled.body.messages?.at(-1)?.role, "system");
+
+  const translated = translateRequest(
+    FORMATS.CLAUDE,
+    FORMATS.OPENAI,
+    targetModel,
+    styled.body,
+    false,
+    null,
+    templateControlProvider
+  );
+  assert.equal(translated.reasoning_effort, "none");
+
+  const providerSpecificData: Record<string, unknown> = {
+    baseUrl: "https://engine.example.test/v1",
+    apiType: "chat",
+  };
+  providerSpecificData.detectedReasoningControl = {
+    mode: "chat-template",
+    modelBackends: { [targetModel]: "vllm" },
+    source: "models.data.effective_owned_by",
+    detectorVersion: 2,
+    observedAt: "2026-10-05T00:00:00.000Z",
+    endpointFingerprint: getReasoningControlEndpointFingerprint(providerSpecificData),
+  };
+  const outbound = await prepareUpstreamBody({
+    translatedBody: translated,
+    modelToCall: targetModel,
+    provider: templateControlProvider,
+    targetFormat: FORMATS.OPENAI,
+    credentials: { providerSpecificData },
   });
   assert.equal(outbound.reasoning_effort, undefined);
   assert.deepEqual(outbound.chat_template_kwargs, {
