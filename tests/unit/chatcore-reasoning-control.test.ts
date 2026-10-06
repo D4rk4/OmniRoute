@@ -36,6 +36,22 @@ const templateControlCredentials = {
   providerSpecificData: { reasoningControl: "chat-template" },
 };
 
+function translateReasoning(
+  sourceFormat: string,
+  targetFormat: string,
+  body: Record<string, unknown>
+) {
+  return translateRequest(
+    sourceFormat,
+    targetFormat,
+    "arbitrary-local-model",
+    body,
+    false,
+    null,
+    templateControlProvider
+  );
+}
+
 test("chat-template reasoning control maps none for arbitrary model ids", async () => {
   for (const model of ["local-model", "vendor/path-shaped-model"]) {
     const source = {
@@ -505,6 +521,96 @@ test("Claude disabled thinking reaches chat-template dispatch as native off swit
   assert.deepEqual(outbound.chat_template_kwargs, {
     thinking: false,
     enable_thinking: false,
+  });
+});
+
+test("reasoning.enabled false crosses shared OpenAI and Claude translation as explicit none", () => {
+  const source = {
+    model: "arbitrary-local-model",
+    messages: [{ role: "user", content: "classify" }],
+    reasoning: { enabled: false, summary: "auto" },
+  };
+  const before = structuredClone(source);
+  const openai = translateReasoning(FORMATS.OPENAI, FORMATS.OPENAI, source);
+  assert.equal(openai.reasoning_effort, "none");
+  assert.deepEqual(openai.reasoning, { summary: "auto", effort: "none" });
+  assert.deepEqual(source, before);
+  assert.deepEqual(
+    translateReasoning(FORMATS.OPENAI, FORMATS.OPENAI, structuredClone(openai)),
+    openai
+  );
+
+  const responses = translateReasoning(
+    FORMATS.OPENAI,
+    FORMATS.OPENAI_RESPONSES,
+    structuredClone(source)
+  );
+  assert.deepEqual(responses.reasoning, { summary: "auto", effort: "none" });
+
+  const claude = translateReasoning(FORMATS.CLAUDE, FORMATS.OPENAI, structuredClone(source));
+  assert.equal(claude.reasoning_effort, "none");
+
+  const claudeOverride = translateReasoning(FORMATS.CLAUDE, FORMATS.OPENAI, {
+    ...structuredClone(source),
+    output_config: { effort: "high" },
+  });
+  assert.equal(claudeOverride.reasoning_effort, "high");
+
+  const thinkingOverride = translateReasoning(FORMATS.CLAUDE, FORMATS.OPENAI, {
+    ...structuredClone(source),
+    thinking: { type: "enabled", budget_tokens: 2048 },
+  });
+  assert.equal(thinkingOverride.reasoning_effort, "medium");
+
+  const forced = translateReasoning(FORMATS.OPENAI, FORMATS.OPENAI, {
+    ...structuredClone(source),
+    _omnirouteReasoningRule: {
+      id: "force-high",
+      effortMode: "force",
+      targetEffort: "high",
+      budgetAction: "preserve",
+    },
+  });
+  assert.equal(forced.reasoning_effort, "high");
+  assert.deepEqual(forced.reasoning, { summary: "auto", effort: "high" });
+});
+
+test("reasoning.enabled false reaches chat-template dispatch as native off switches", async () => {
+  const translated = translateReasoning(FORMATS.OPENAI, FORMATS.OPENAI, {
+    messages: [{ role: "user", content: "classify" }],
+    reasoning: { enabled: false },
+  });
+  const outbound = await prepareUpstreamBody({
+    translatedBody: translated,
+    modelToCall: "arbitrary-local-model",
+    provider: templateControlProvider,
+    targetFormat: FORMATS.OPENAI,
+    credentials: templateControlCredentials,
+  });
+
+  assert.equal(outbound.reasoning_effort, undefined);
+  assert.equal(outbound.reasoning, undefined);
+  assert.deepEqual(outbound.chat_template_kwargs, {
+    thinking: false,
+    enable_thinking: false,
+  });
+
+  const nativeOverride = await prepareUpstreamBody({
+    translatedBody: translateReasoning(FORMATS.OPENAI, FORMATS.OPENAI, {
+      messages: [{ role: "user", content: "classify" }],
+      reasoning: { enabled: false },
+      chat_template_kwargs: { enable_thinking: true, custom_flag: "kept" },
+    }),
+    modelToCall: "arbitrary-local-model",
+    provider: templateControlProvider,
+    targetFormat: FORMATS.OPENAI,
+    credentials: templateControlCredentials,
+  });
+  assert.equal(nativeOverride.reasoning_effort, undefined);
+  assert.equal(nativeOverride.reasoning, undefined);
+  assert.deepEqual(nativeOverride.chat_template_kwargs, {
+    enable_thinking: true,
+    custom_flag: "kept",
   });
 });
 
