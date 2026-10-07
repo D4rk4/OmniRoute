@@ -202,3 +202,110 @@ test("nested maxConcurrent holds a connection slot until each streaming body set
     );
   }
 });
+
+test("nested maxConcurrent timeout returns 429 without an unhandled rejection", async () => {
+  const connection = await providersDb.createProviderConnection({
+    provider: "openai",
+    authType: "apikey",
+    name: "synthetic-timeout-cap",
+    apiKey: "sk-synthetic-timeout-cap",
+    isActive: true,
+    testStatus: "active",
+    maxConcurrent: null,
+    rateLimitProtection: true,
+    rateLimitOverrides: { maxConcurrent: 2, minTime: 1, maxWaitMs: 25 },
+  });
+  readCache.invalidateDbCache("connections");
+  await rateLimitManager.initializeRateLimits();
+
+  const streams: ControlledStream[] = [];
+  let dispatches = 0;
+  globalThis.fetch = async () => {
+    const index = dispatches++;
+    let controlled!: ControlledStream;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controlled = { controller, settled: false };
+        streams.push(controlled);
+        controller.enqueue(initialChunk(index));
+      },
+    });
+    return new Response(body, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  };
+
+  const makeStreamingRequest = (index: number) =>
+    handleChat(
+      buildRequest({
+        body: {
+          model: "openai/synthetic-timeout-model",
+          stream: true,
+          messages: [{ role: "user", content: `synthetic holder ${index}` }],
+        },
+      })
+    );
+  const [first, second] = await Promise.all([makeStreamingRequest(0), makeStreamingRequest(1)]);
+  const responses = [first, second];
+  const semaphoreKey = accountSemaphore.buildAccountSemaphoreKey({
+    provider: "openai",
+    accountKey: connection.id,
+  });
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+
+  try {
+    assert.equal(dispatches, 2);
+    const rejected = await handleChat(
+      buildRequest({
+        body: {
+          model: "openai/synthetic-timeout-model",
+          stream: false,
+          temperature: 0.1,
+          messages: [{ role: "user", content: "synthetic queued request" }],
+        },
+      })
+    );
+
+    assert.equal(rejected.status, 429);
+    assert.equal(dispatches, 2, "a timed-out request must not reach the provider");
+    assert.equal(accountSemaphore.getStats()[semaphoreKey]?.queued, 0);
+    assert.equal(accountSemaphore.getStats()[semaphoreKey]?.running, 2);
+    assert.ok(
+      streams.every((stream) => !stream.settled),
+      "the admitted streams must stay alive"
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, [], "a handled queue timeout must not escape the request");
+
+    finishStream(streams[0]);
+    await first.text();
+    assert.ok(
+      await waitFor(() => accountSemaphore.getStats()[semaphoreKey]?.running === 1),
+      "finishing one stream did not release its slot"
+    );
+
+    const subsequent = await makeStreamingRequest(2);
+    responses.push(subsequent);
+    assert.equal(subsequent.status, 200);
+    assert.equal(dispatches, 3, "a later request must dispatch after a stream releases its slot");
+
+    finishStream(streams[1]);
+    finishStream(streams[2]);
+    await Promise.all([second.text(), subsequent.text()]);
+    assert.ok(
+      await waitFor(() => accountSemaphore.getStats()[semaphoreKey] === undefined),
+      "completed streams leaked the connection semaphore"
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(await callLogsDb.waitForCallLogSaves(10_000), true);
+    proxyLogger.flushProxyLogsSync();
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    for (const stream of streams) finishStream(stream);
+    await Promise.allSettled(responses.map((response) => response.text()));
+    proxyLogger.flushProxyLogsSync();
+  }
+});
