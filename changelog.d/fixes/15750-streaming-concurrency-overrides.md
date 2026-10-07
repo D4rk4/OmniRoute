@@ -1,0 +1,1 @@
+- **fix(sse):** hold enabled per-connection `maxConcurrent` overrides until response bodies finish, fail, or are cancelled, so receiving HTTP headers cannot admit extra streaming requests; preserve legacy caps and clear stale limits when credentials change ([#15750](https://github.com/diegosouzapw/OmniRoute/pull/15750)) — thanks @D4rk4
