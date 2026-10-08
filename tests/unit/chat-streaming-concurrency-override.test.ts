@@ -204,6 +204,8 @@ test("nested maxConcurrent holds a connection slot until each streaming body set
 });
 
 test("nested maxConcurrent timeout returns 429 without an unhandled rejection", async () => {
+  const generousOverrides = { maxConcurrent: 2, minTime: 1, maxWaitMs: 10_000 };
+  const tightOverrides = { ...generousOverrides, maxWaitMs: 25 };
   const connection = await providersDb.createProviderConnection({
     provider: "openai",
     authType: "apikey",
@@ -213,20 +215,43 @@ test("nested maxConcurrent timeout returns 429 without an unhandled rejection", 
     testStatus: "active",
     maxConcurrent: null,
     rateLimitProtection: true,
-    rateLimitOverrides: { maxConcurrent: 2, minTime: 1, maxWaitMs: 25 },
+    // The two holders and the later request must be admitted on any machine, so they run
+    // with a generous queue budget. Only the request that is meant to time out gets the
+    // tight 25ms budget (applied below through the same refresh path the provider PUT
+    // route uses). With 25ms for everyone, a CPU-starved runner let a holder's gate +
+    // rate-limiter wait exceed the budget, the holder got a legitimate 503 and the test
+    // failed with `dispatches` 1 (or 0) instead of 2 at the first assertion.
+    rateLimitOverrides: generousOverrides,
   });
   readCache.invalidateDbCache("connections");
   await rateLimitManager.initializeRateLimits();
 
   const streams: ControlledStream[] = [];
+  // Key each upstream stream by the holder index in its request body: the two holders are
+  // sent concurrently, so dispatch order (streams[0] vs streams[1]) is not guaranteed to
+  // match `first`/`second` on a loaded runner.
+  const holderStreams = new Map<number, ControlledStream>();
+  const holderStream = (holder: number): ControlledStream => {
+    const stream = holderStreams.get(holder);
+    assert.ok(stream, `holder ${holder} never reached the provider`);
+    return stream;
+  };
   let dispatches = 0;
-  globalThis.fetch = async () => {
+  globalThis.fetch = async (_input: unknown, init?: RequestInit) => {
     const index = dispatches++;
+    const requestBody =
+      typeof init?.body === "string"
+        ? init.body
+        : init?.body instanceof Uint8Array
+          ? new TextDecoder().decode(init.body)
+          : "";
+    const holder = /synthetic holder (\d+)/.exec(requestBody)?.[1];
     let controlled!: ControlledStream;
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
         controlled = { controller, settled: false };
         streams.push(controlled);
+        if (holder !== undefined) holderStreams.set(Number(holder), controlled);
         controller.enqueue(initialChunk(index));
       },
     });
@@ -258,6 +283,7 @@ test("nested maxConcurrent timeout returns 429 without an unhandled rejection", 
 
   try {
     assert.equal(dispatches, 2);
+    rateLimitManager.refreshConnectionRateLimits(connection.id, tightOverrides);
     const rejected = await handleChat(
       buildRequest({
         body: {
@@ -279,8 +305,9 @@ test("nested maxConcurrent timeout returns 429 without an unhandled rejection", 
     );
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(unhandled, [], "a handled queue timeout must not escape the request");
+    rateLimitManager.refreshConnectionRateLimits(connection.id, generousOverrides);
 
-    finishStream(streams[0]);
+    finishStream(holderStream(0));
     await first.text();
     assert.ok(
       await waitFor(() => accountSemaphore.getStats()[semaphoreKey]?.running === 1),
@@ -292,8 +319,8 @@ test("nested maxConcurrent timeout returns 429 without an unhandled rejection", 
     assert.equal(subsequent.status, 200);
     assert.equal(dispatches, 3, "a later request must dispatch after a stream releases its slot");
 
-    finishStream(streams[1]);
-    finishStream(streams[2]);
+    finishStream(holderStream(1));
+    finishStream(holderStream(2));
     await Promise.all([second.text(), subsequent.text()]);
     assert.ok(
       await waitFor(() => accountSemaphore.getStats()[semaphoreKey] === undefined),
@@ -304,7 +331,12 @@ test("nested maxConcurrent timeout returns 429 without an unhandled rejection", 
     proxyLogger.flushProxyLogsSync();
   } finally {
     process.off("unhandledRejection", onUnhandled);
-    for (const stream of streams) finishStream(stream);
+    for (const stream of streams) {
+      // Cleanup only: a stream the pipeline already closed must not replace the real failure.
+      try {
+        finishStream(stream);
+      } catch {}
+    }
     await Promise.allSettled(responses.map((response) => response.text()));
     proxyLogger.flushProxyLogsSync();
   }
