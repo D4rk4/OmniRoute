@@ -334,7 +334,7 @@ describe("ApiTab", () => {
     expect(image.getAttribute("src")).toBe("data:image/png;base64,QUJDRA==");
     expect(image.alt).toBe("Synthetic image");
     expect(el.querySelector('a[href^="javascript:"]')).toBeNull();
-    expect(el.querySelector("a[download]")?.className).toContain("focus:opacity-100");
+    expect(el.querySelector("a[download]")?.className).toContain("focus-visible:opacity-100");
   });
 
   it("shows info banner", async () => {

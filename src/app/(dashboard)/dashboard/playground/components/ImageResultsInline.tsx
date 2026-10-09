@@ -87,7 +87,7 @@ export default function ImageResultsInline({ images }: { images: PlaygroundImage
             <a
               href={image.src}
               download={`image-${index + 1}.png`}
-              className="absolute bottom-2 right-2 bg-black/60 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity flex items-center gap-1"
+              className="absolute bottom-2 right-2 bg-black/60 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity flex items-center gap-1"
             >
               <span className="material-symbols-outlined text-[13px]">download</span>
               {t("save")}
