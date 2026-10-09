@@ -6,14 +6,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/playground/types", () => ({ getModelPricing: () => null }));
 vi.mock("@/lib/playground/streamMetrics", () => ({
-  computeMetrics: () => ({ ttftMs: 100, totalMs: 500, tokensIn: 10, tokensOut: 20, tps: 40, costUsd: 0.001 }),
+  computeMetrics: () => ({
+    ttftMs: 100,
+    totalMs: 500,
+    tokensIn: 10,
+    tokensOut: 20,
+    tps: 40,
+    costUsd: 0.001,
+  }),
 }));
 vi.mock("remark-gfm", () => ({ default: () => {} }));
 vi.mock("react-markdown", () => ({
-  default: ({ children }: { children: React.ReactNode }) => <div data-testid="markdown-content">{children}</div>,
+  default: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="markdown-content">{children}</div>
+  ),
 }));
 if (typeof Element.prototype.scrollIntoView === "undefined") {
-  Object.defineProperty(Element.prototype, "scrollIntoView", { value: () => {}, writable: true, configurable: true });
+  Object.defineProperty(Element.prototype, "scrollIntoView", {
+    value: () => {},
+    writable: true,
+    configurable: true,
+  });
 }
 function setInputValue(el: HTMLTextAreaElement | HTMLInputElement, value: string): void {
   const nativeSetter =
@@ -24,8 +37,10 @@ function setInputValue(el: HTMLTextAreaElement | HTMLInputElement, value: string
   el.dispatchEvent(new Event("input", { bubbles: true }));
   el.dispatchEvent(new Event("change", { bubbles: true }));
 }
-const { DEFAULT_PARAMS } = await import("../../../src/app/(dashboard)/dashboard/playground/components/ParamSliders");
-const { default: ChatTab } = await import("../../../src/app/(dashboard)/dashboard/playground/components/tabs/ChatTab");
+const { DEFAULT_PARAMS } =
+  await import("../../../src/app/(dashboard)/dashboard/playground/components/ParamSliders");
+const { default: ChatTab } =
+  await import("../../../src/app/(dashboard)/dashboard/playground/components/tabs/ChatTab");
 function makeSearchProviderConfig() {
   return {
     endpoint: "search" as const,
@@ -36,8 +51,20 @@ function makeSearchProviderConfig() {
     params: { ...DEFAULT_PARAMS },
   };
 }
+function makeImageProviderConfig() {
+  return {
+    endpoint: "images" as const,
+    baseUrl: "http://localhost:20128",
+    model: "image-provider/model-image",
+    provider: "image-provider",
+    systemPrompt: "",
+    params: { ...DEFAULT_PARAMS },
+  };
+}
 const containers: Array<{ root: ReturnType<typeof createRoot>; el: HTMLDivElement }> = [];
-function renderChatTab(config: ReturnType<typeof makeSearchProviderConfig>): HTMLDivElement {
+function renderChatTab(
+  config: React.ComponentProps<typeof ChatTab>["configState"]
+): HTMLDivElement {
   const el = document.createElement("div");
   document.body.appendChild(el);
   const root = createRoot(el);
@@ -93,6 +120,39 @@ describe("ChatTab — search-provider endpoint routing (#10592)", () => {
     });
     await waitFor(() => capturedUrl !== null);
     expect(capturedUrl).toBe("/api/v1/search");
+    fetchSpy.mockRestore();
+  });
+
+  it("sends the chat input as prompt for image generation", async () => {
+    let capturedUrl: string | null = null;
+    let capturedBody: Record<string, unknown> | null = null;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      capturedUrl = String(url);
+      capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({ created: 1, data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const el = renderChatTab(makeImageProviderConfig());
+    const textarea = el.querySelector("textarea") as HTMLTextAreaElement;
+    act(() => {
+      setInputValue(textarea, "A synthetic mountain landscape");
+    });
+    const sendBtn = Array.from(el.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Send")
+    ) as HTMLButtonElement | undefined;
+
+    await act(async () => {
+      sendBtn?.click();
+    });
+    await waitFor(() => capturedBody !== null);
+
+    expect(capturedUrl).toBe("/api/v1/images/generations");
+    expect(capturedBody).toEqual({
+      prompt: "A synthetic mountain landscape",
+      model: "image-provider/model-image",
+    });
     fetchSpy.mockRestore();
   });
 });
